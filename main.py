@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import PlainTextResponse
-from twilio.twiml.messaging_response import MessagingResponse
 import requests
 
 app = FastAPI()
@@ -25,13 +24,9 @@ async def whatsapp_webhook(
     from_number = From.replace("whatsapp:", "")
     phone = from_number
 
-    resp = MessagingResponse()
-    msg = resp.message()
-
     session = SESSIONS.get(from_number)
 
     # ================= VERIFY =================
-
     if text == "verify":
         r = requests.post(
             f"{SOUQA_BASE_URL}/ai-service/verify-owner",
@@ -41,8 +36,7 @@ async def whatsapp_webhook(
         )
 
         if r.status_code != 200 or not r.json().get("data", {}).get("exists"):
-            msg.body("❌ No account linked to this phone number.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ No account linked to this phone number.")
 
         SESSIONS[from_number] = {
             "owner_verified": True,
@@ -50,7 +44,7 @@ async def whatsapp_webhook(
             "state": None
         }
 
-        msg.body(
+        return PlainTextResponse(
             "✅ Account verified!\n\n"
             "Commands:\n"
             "• add product\n"
@@ -58,31 +52,22 @@ async def whatsapp_webhook(
             "• update product\n"
             "• delete product <slug>"
         )
-        return PlainTextResponse(str(resp))
 
     # ================= AUTH GUARD =================
-
     if text.startswith(("add", "list", "update", "delete")):
         if not session or not session.get("owner_verified"):
-            msg.body("🔒 Please verify first.\nSend: verify")
-            return PlainTextResponse(str(resp))
-# ===================== ADD PRODUCT =====================
+            return PlainTextResponse("🔒 Please verify first.\nSend: verify")
 
+    # ================= ADD PRODUCT =================
     if text == "add product":
-        if not session:
-            msg.body("🔒 Please verify first.\nSend: verify")
-            return PlainTextResponse(str(resp))
-
         session["state"] = "awaiting_product_details"
 
-
-        msg.body(
+        return PlainTextResponse(
             "🛒 Send product details in this format:\n\n"
             "name | cost | currency | location | size | image_url\n\n"
             "Example:\n"
             "Iphone 17 | 400 | USD | Lagos | XL | https://image.com/pic.jpg"
         )
-        return PlainTextResponse(str(resp))
 
     if session and session.get("state") == "awaiting_product_details":
         try:
@@ -90,8 +75,7 @@ async def whatsapp_webhook(
                 x.strip() for x in raw_text.split("|")
             ]
         except ValueError:
-            msg.body("❌ Invalid format.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Invalid format.")
 
         form_data = {
             "category_id": "b9123c31-41ba-46a2-ae5b-1d446d050c85",
@@ -105,9 +89,7 @@ async def whatsapp_webhook(
             "phone": session["phone"]
         }
 
-        files = {
-            "image_urls[]": (None, image_url)
-        }
+        files = {"image_urls[]": (None, image_url)}
 
         r = requests.post(
             f"{SOUQA_BASE_URL}/ai-service/products",
@@ -118,15 +100,12 @@ async def whatsapp_webhook(
         )
 
         if r.status_code not in (200, 201):
-            msg.body("❌ Failed to add product.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Failed to add product.")
 
         session["state"] = None
-        msg.body("✅ Product added successfully!")
-        return PlainTextResponse(str(resp))
+        return PlainTextResponse("✅ Product added successfully!")
 
     # ================= LIST PRODUCTS =================
-
     if text in ("list product", "list products"):
         r = requests.get(
             f"{SOUQA_BASE_URL}/ai-service/products",
@@ -138,18 +117,15 @@ async def whatsapp_webhook(
         products = r.json().get("data", {}).get("data", [])
 
         if not products:
-            msg.body("📦 You have no products.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("📦 You have no products.")
 
         reply = "📦 Your products:\n\n"
-        for p in products:
-            reply += f"• {p['name']}\n  Slug: {p['slug']}\n\n"
+        for i, p in enumerate(products, 1):
+            reply += f"{i}. {p['name']}\n   Slug: {p['slug']}\n\n"
 
-        msg.body(reply)
-        return PlainTextResponse(str(resp))
+        return PlainTextResponse(reply)
 
-    # ================= UPDATE PRODUCT (STEP 1) =================
-
+    # ================= UPDATE PRODUCT =================
     if text == "update product":
         r = requests.get(
             f"{SOUQA_BASE_URL}/ai-service/products",
@@ -159,10 +135,8 @@ async def whatsapp_webhook(
         )
 
         products = r.json().get("data", {}).get("data", [])
-
         if not products:
-            msg.body("📦 You have no products to update.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("📦 You have no products to update.")
 
         session["products"] = products
         session["state"] = "awaiting_product_choice"
@@ -171,31 +145,24 @@ async def whatsapp_webhook(
         for i, p in enumerate(products, 1):
             reply += f"{i}. {p['name']}\n"
 
-        msg.body(reply)
-        return PlainTextResponse(str(resp))
-
-    # ================= UPDATE PRODUCT (STEP 2) =================
+        return PlainTextResponse(reply)
 
     if session and session.get("state") == "awaiting_product_choice":
         try:
             idx = int(text) - 1
             product = session["products"][idx]
         except:
-            msg.body("❌ Invalid selection.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Invalid selection.")
 
         session["selected_product"] = product
         session["state"] = "awaiting_update_payload"
 
-        msg.body(
-            f"✏️ Updating *{product['name']}*\n\n"
+        return PlainTextResponse(
+            f"✏️ Updating {product['name']}\n\n"
             "Send:\n"
             "name | cost | currency | location | size | image_url\n\n"
-            "Use `-` to keep existing value."
+            "Use '-' to keep existing value."
         )
-        return PlainTextResponse(str(resp))
-
-    # ================= UPDATE PRODUCT (STEP 3) =================
 
     if session and session.get("state") == "awaiting_update_payload":
         product = session["selected_product"]
@@ -205,8 +172,7 @@ async def whatsapp_webhook(
                 x.strip() for x in raw_text.split("|")
             ]
         except ValueError:
-            msg.body("❌ Invalid format.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Invalid format.")
 
         form_data = {
             "_method": "put",
@@ -234,24 +200,20 @@ async def whatsapp_webhook(
         )
 
         if r.status_code != 200:
-            msg.body("❌ Failed to update product.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Failed to update product.")
 
         session["state"] = None
         session.pop("selected_product", None)
         session.pop("products", None)
 
-        msg.body("✅ Product updated successfully!")
-        return PlainTextResponse(str(resp))
+        return PlainTextResponse("✅ Product updated successfully!")
 
     # ================= DELETE PRODUCT =================
-
     if text.startswith("delete product"):
         slug = text.replace("delete product", "").strip()
 
         if not slug:
-            msg.body("❌ Usage:\ndelete product <slug>")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Usage:\ndelete product <slug>")
 
         r = requests.delete(
             f"{SOUQA_BASE_URL}/ai-service/products/{slug}",
@@ -261,15 +223,12 @@ async def whatsapp_webhook(
         )
 
         if r.status_code != 200:
-            msg.body("❌ Failed to delete product.")
-            return PlainTextResponse(str(resp))
+            return PlainTextResponse("❌ Failed to delete product.")
 
-        msg.body("🗑️ Product deleted successfully.")
-        return PlainTextResponse(str(resp))
+        return PlainTextResponse("🗑️ Product deleted successfully!")
 
     # ================= HELP =================
-
-    msg.body(
+    return PlainTextResponse(
         "👋 Souqa WhatsApp Bot\n\n"
         "Commands:\n"
         "• verify\n"
@@ -278,5 +237,3 @@ async def whatsapp_webhook(
         "• update product\n"
         "• delete product <slug>"
     )
-
-    return PlainTextResponse(str(resp))
